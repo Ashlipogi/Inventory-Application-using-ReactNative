@@ -4,31 +4,36 @@
     "slug": "StockBox",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/LOGO.png",
+    "icon": "./assets/images/RLOGO.png",
     "scheme": "inventoryapp",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.ashlipogi.StockBox",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/LOGO.png",
+        "foregroundImage": "./assets/images/RLOGO.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.ashlipogi.StockBox"
     },
     "web": {
       "bundler": "metro",
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/RLOGO.png"
     },
     "plugins": [
       "expo-router",
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
+          "image": "./assets/images/RLOGO.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
@@ -38,6 +43,13 @@
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "6ac77c0f-efb6-403e-8edb-241614346055"
+      }
+    },
+    "owner": "ashlipogi"
   }
 }

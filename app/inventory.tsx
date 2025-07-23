@@ -16,8 +16,12 @@ import {
 import { router } from "expo-router"
 import { Ionicons } from "@expo/vector-icons"
 import InventoryService, { type InventoryItem } from "@/lib/inventory"
+import { useTheme } from "@/hooks/useTheme"
+import { useSettings } from "@/hooks/useSettings"
 
 export default function InventoryScreen() {
+  const { theme, isDark } = useTheme()
+  const { formatCurrency, formatCurrencyInt, shouldShowCostPrices, getDefaultLowStockThreshold, calculateProfit } = useSettings()
   const [items, setItems] = useState<InventoryItem[]>([])
   const [loading, setLoading] = useState(true)
   const [showAddModal, setShowAddModal] = useState(false)
@@ -43,6 +47,13 @@ export default function InventoryScreen() {
   useEffect(() => {
     initializeInventory()
   }, [])
+
+  // Set default min stock level when opening add modal
+  useEffect(() => {
+    if (showAddModal) {
+      setMinStockLevel(getDefaultLowStockThreshold().toString())
+    }
+  }, [showAddModal, getDefaultLowStockThreshold])
 
   const initializeInventory = async () => {
     try {
@@ -174,20 +185,22 @@ export default function InventoryScreen() {
       setSelectedItem(null)
 
       const totalAmount = unitPrice * qty
-      const profit = (unitPrice - selectedItem.cost_price) * qty
+      const profit = calculateProfit(selectedItem.cost_price, unitPrice, qty)
+      const profitMessage = profit > 0 ? `\nProfit: ${formatCurrency(profit)}` : ""
+      
       Alert.alert(
         "Sale Recorded! 💰",
-        `Sold ${qty} units for $${totalAmount.toFixed(2)}\nProfit: $${profit.toFixed(2)}`,
+        `Sold ${qty} units for ${formatCurrency(totalAmount)}${profitMessage}`,
       )
     } catch (error: unknown) {
-  if (error instanceof Error) {
-    console.error("Error:", error.message)
-    Alert.alert("Error", error.message)
-  } else {
-    console.error("Unknown error:", error)
-    Alert.alert("Error", "An unexpected error occurred.")
-  }
-}
+      if (error instanceof Error) {
+        console.error("Error:", error.message)
+        Alert.alert("Error", error.message)
+      } else {
+        console.error("Unknown error:", error)
+        Alert.alert("Error", "An unexpected error occurred.")
+      }
+    }
   }
 
   const clearAddForm = () => {
@@ -195,7 +208,7 @@ export default function InventoryScreen() {
     setCostPrice("")
     setSellingPrice("")
     setQuantity("")
-    setMinStockLevel("")
+    setMinStockLevel(getDefaultLowStockThreshold().toString())
   }
 
   const openStockModal = (item: InventoryItem, type: "in" | "out") => {
@@ -240,65 +253,86 @@ export default function InventoryScreen() {
     const isLowStock = item.quantity <= item.min_stock_level
     const stockValue = item.cost_price * item.quantity
     const totalSold = item.total_sold || 0
+    const profit = calculateProfit(item.cost_price, item.selling_price, totalSold)
 
     return (
-      <View style={[styles.itemCard, isLowStock && styles.lowStockCard]}>
+      <View style={[
+        styles.itemCard, 
+        { backgroundColor: theme.surface },
+        isLowStock && { borderWidth: 2, borderColor: theme.error, backgroundColor: `${theme.error}10` }
+      ]}>
         <View style={styles.itemHeader}>
           <View style={styles.itemInfo}>
-            <Text style={styles.itemName}>{item.name}</Text>
+            <Text style={[styles.itemName, { color: theme.text }]}>{item.name}</Text>
             {isLowStock && (
-              <View style={styles.lowStockBadge}>
-                <Ionicons name="warning" size={12} color="#FF3B30" />
+              <View style={[styles.lowStockBadge, { backgroundColor: theme.error }]}>
+                <Ionicons name="warning" size={12} color="#FFFFFF" />
                 <Text style={styles.lowStockText}>Low Stock</Text>
               </View>
             )}
           </View>
           <TouchableOpacity style={styles.deleteButton} onPress={() => deleteItem(item)}>
-            <Ionicons name="trash-outline" size={20} color="#FF3B30" />
+            <Ionicons name="trash-outline" size={20} color={theme.error} />
           </TouchableOpacity>
         </View>
 
         <View style={styles.itemDetails}>
           <View style={styles.priceRow}>
-            <Text style={styles.priceLabel}>Cost: ₱{item.cost_price.toFixed(2)}</Text>
-            <Text style={styles.priceLabel}>Sell: ₱{item.selling_price.toFixed(2)}</Text>
+            {shouldShowCostPrices() && (
+              <Text style={[styles.priceLabel, { color: theme.textSecondary }]}>
+                Cost: {formatCurrency(item.cost_price)}
+              </Text>
+            )}
+            <Text style={[styles.priceLabel, { color: theme.textSecondary }]}>
+              Sell: {formatCurrency(item.selling_price)}
+            </Text>
           </View>
 
           <View style={styles.stockRow}>
-            <Text style={styles.stockText}>Stock: {item.quantity}</Text>
-            <Text style={styles.valueText}>Value: ₱{stockValue.toFixed(2)}</Text>
+            <Text style={[styles.stockText, { color: theme.text }]}>Stock: {item.quantity}</Text>
+            <Text style={[styles.valueText, { color: theme.primary }]}>
+              Value: {formatCurrency(stockValue)}
+            </Text>
           </View>
 
           <View style={styles.salesRow}>
-            <Text style={styles.soldText}>Sold: {totalSold} units</Text>
-            <Text style={styles.minStockText}>Min Level: {item.min_stock_level}</Text>
+            <Text style={[styles.soldText, { color: theme.success }]}>Sold: {totalSold} units</Text>
+            {shouldShowCostPrices() && profit > 0 && (
+              <Text style={[styles.profitText, { color: theme.success }]}>
+                Profit: {formatCurrency(profit)}
+              </Text>
+            )}
+            <Text style={[styles.minStockText, { color: theme.textSecondary }]}>Min Level: {item.min_stock_level}</Text>
           </View>
         </View>
 
         <View style={styles.actionButtons}>
           <TouchableOpacity
-            style={[styles.actionButton, styles.pullInButton]}
+            style={[styles.actionButton, { backgroundColor: `${theme.success}20` }]}
             onPress={() => openStockModal(item, "in")}
           >
-            <Ionicons name="add-circle-outline" size={18} color="#34C759" />
-            <Text style={styles.pullInText}>Pull In</Text>
+            <Ionicons name="add-circle-outline" size={18} color={theme.success} />
+            <Text style={[styles.pullInText, { color: theme.success }]}>Pull In</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.actionButton, styles.pullOutButton]}
+            style={[styles.actionButton, { backgroundColor: `${theme.accent}20` }]}
             onPress={() => openStockModal(item, "out")}
           >
-            <Ionicons name="remove-circle-outline" size={18} color="#FF9500" />
-            <Text style={styles.pullOutText}>Pull Out</Text>
+            <Ionicons name="remove-circle-outline" size={18} color={theme.accent} />
+            <Text style={[styles.pullOutText, { color: theme.accent }]}>Pull Out</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.actionButton, styles.saleButton]}
+            style={[styles.actionButton, { backgroundColor: item.quantity === 0 ? `${theme.textTertiary}20` : `${theme.primary}20` }]}
             onPress={() => openSaleModal(item)}
             disabled={item.quantity === 0}
           >
-            <Ionicons name="cash-outline" size={18} color={item.quantity === 0 ? "#C7C7CC" : "#007AFF"} />
-            <Text style={[styles.saleText, item.quantity === 0 && styles.disabledText]}>Sell</Text>
+            <Ionicons name="cash-outline" size={18} color={item.quantity === 0 ? theme.textTertiary : theme.primary} />
+            <Text style={[
+              styles.saleText, 
+              { color: item.quantity === 0 ? theme.textTertiary : theme.primary }
+            ]}>Sell</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -307,46 +341,137 @@ export default function InventoryScreen() {
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <Text>Loading inventory...</Text>
+      <View style={[styles.loadingContainer, { backgroundColor: theme.background }]}>
+        <Text style={{ color: theme.text }}>Loading inventory...</Text>
       </View>
     )
   }
 
+  const dynamicStyles = StyleSheet.create({
+    container: {
+      flex: 1,
+      backgroundColor: theme.background,
+    },
+    header: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: 24,
+      paddingTop: 60,
+      paddingBottom: 20,
+    },
+    statCard: {
+      flex: 1,
+      backgroundColor: theme.surface,
+      borderRadius: 12,
+      padding: 16,
+      alignItems: "center",
+    },
+    searchContainer: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: theme.surface,
+      borderRadius: 12,
+      marginHorizontal: 24,
+      marginBottom: 20,
+      paddingHorizontal: 16,
+      height: 44,
+    },
+    modalContainer: {
+      flex: 1,
+      backgroundColor: theme.background,
+    },
+    modalHeader: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      paddingHorizontal: 24,
+      paddingTop: 60,
+      paddingBottom: 20,
+      borderBottomWidth: 1,
+      borderBottomColor: theme.border,
+    },
+    input: {
+      backgroundColor: theme.surface,
+      borderRadius: 12,
+      paddingHorizontal: 16,
+      height: 52,
+      fontSize: 16,
+      color: theme.text,
+    },
+    selectedItemInfo: {
+      backgroundColor: theme.surface,
+      borderRadius: 12,
+      padding: 16,
+      marginBottom: 24,
+      alignItems: "center",
+    },
+    stockTypeButton: {
+      flex: 1,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      paddingVertical: 16,
+      borderRadius: 12,
+      backgroundColor: theme.surface,
+      gap: 8,
+    },
+    activeStockType: {
+      backgroundColor: theme.primary,
+    },
+    previewContainer: {
+      backgroundColor: theme.surface,
+      borderRadius: 12,
+      padding: 16,
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+    },
+    salePreviewContainer: {
+      backgroundColor: theme.surface,
+      borderRadius: 12,
+      padding: 16,
+    },
+  })
+
   return (
     <>
-      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
-      <View style={styles.container}>
-        <View style={styles.header}>
+      <StatusBar 
+        barStyle={isDark ? "light-content" : "dark-content"} 
+        backgroundColor={theme.background} 
+      />
+      <View style={dynamicStyles.container}>
+        <View style={dynamicStyles.header}>
           <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-            <Ionicons name="arrow-back" size={24} color="#007AFF" />
+            <Ionicons name="arrow-back" size={24} color={theme.primary} />
           </TouchableOpacity>
-          <Text style={styles.title}>Inventory Management</Text>
+          <Text style={[styles.title, { color: theme.text }]}>Inventory Management</Text>
           <TouchableOpacity style={styles.addButton} onPress={() => setShowAddModal(true)}>
-            <Ionicons name="add" size={24} color="#007AFF" />
+            <Ionicons name="add" size={24} color={theme.primary} />
           </TouchableOpacity>
         </View>
 
         <View style={styles.statsContainer}>
-          <View style={styles.statCard}>
-            <Text style={styles.statNumber}>{items.length}</Text>
-            <Text style={styles.statLabel}>Total Items</Text>
+          <View style={dynamicStyles.statCard}>
+            <Text style={[styles.statNumber, { color: theme.text }]}>{items.length}</Text>
+            <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Total Items</Text>
           </View>
-          <View style={styles.statCard}>
-            <Text style={styles.statNumber}>{lowStockItems.length}</Text>
-            <Text style={styles.statLabel}>Low Stock</Text>
+          <View style={dynamicStyles.statCard}>
+            <Text style={[styles.statNumber, { color: theme.text }]}>{lowStockItems.length}</Text>
+            <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Low Stock</Text>
           </View>
-          <View style={styles.statCard}>
-            <Text style={styles.statNumber}>₱{totalStockValue.toFixed(0)}</Text>
-            <Text style={styles.statLabel}>Total Value</Text>
+          <View style={dynamicStyles.statCard}>
+            <Text style={[styles.statNumber, { color: theme.text }]}>{formatCurrencyInt(totalStockValue)}</Text>
+            <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Total Value</Text>
           </View>
         </View>
 
-        <View style={styles.searchContainer}>
-          <Ionicons name="search" size={20} color="#8E8E93" style={styles.searchIcon} />
+        <View style={dynamicStyles.searchContainer}>
+          <Ionicons name="search" size={20} color={theme.textSecondary} style={styles.searchIcon} />
           <TextInput
-            style={styles.searchInput}
+            style={[styles.searchInput, { color: theme.text }]}
             placeholder="Search products..."
+            placeholderTextColor={theme.textSecondary}
             value={searchQuery}
             onChangeText={setSearchQuery}
           />
@@ -360,85 +485,87 @@ export default function InventoryScreen() {
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              <Ionicons name="cube-outline" size={64} color="#C7C7CC" />
-              <Text style={styles.emptyText}>No products found</Text>
-              <Text style={styles.emptySubtext}>Add your first product to get started</Text>
+              <Ionicons name="cube-outline" size={64} color={theme.textTertiary} />
+              <Text style={[styles.emptyText, { color: theme.textSecondary }]}>No products found</Text>
+              <Text style={[styles.emptySubtext, { color: theme.textTertiary }]}>Add your first product to get started</Text>
             </View>
           }
         />
 
         {/* Sale Modal */}
         <Modal visible={showSaleModal} animationType="slide" presentationStyle="pageSheet">
-          <View style={styles.modalContainer}>
-            <View style={styles.modalHeader}>
+          <View style={dynamicStyles.modalContainer}>
+            <View style={dynamicStyles.modalHeader}>
               <TouchableOpacity onPress={() => setShowSaleModal(false)}>
-                <Text style={styles.cancelText}>Cancel</Text>
+                <Text style={[styles.cancelText, { color: theme.textSecondary }]}>Cancel</Text>
               </TouchableOpacity>
-              <Text style={styles.modalTitle}>Record Sale</Text>
+              <Text style={[styles.modalTitle, { color: theme.text }]}>Record Sale</Text>
               <TouchableOpacity onPress={handleSale}>
-                <Text style={styles.saveText}>Sell</Text>
+                <Text style={[styles.saveText, { color: theme.primary }]}>Sell</Text>
               </TouchableOpacity>
             </View>
 
             <View style={styles.modalContent}>
               {selectedItem && (
                 <>
-                  <View style={styles.selectedItemInfo}>
-                    <Text style={styles.selectedItemName}>{selectedItem.name}</Text>
-                    <Text style={styles.currentStock}>Available: {selectedItem.quantity} units</Text>
-                    <Text style={styles.soldInfo}>Total Sold: {selectedItem.total_sold || 0} units</Text>
+                  <View style={dynamicStyles.selectedItemInfo}>
+                    <Text style={[styles.selectedItemName, { color: theme.text }]}>{selectedItem.name}</Text>
+                    <Text style={[styles.currentStock, { color: theme.textSecondary }]}>Available: {selectedItem.quantity} units</Text>
+                    <Text style={[styles.soldInfo, { color: theme.success }]}>Total Sold: {selectedItem.total_sold || 0} units</Text>
                   </View>
 
                   <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Quantity to Sell</Text>
+                    <Text style={[styles.label, { color: theme.text }]}>Quantity to Sell</Text>
                     <TextInput
-                      style={styles.input}
+                      style={dynamicStyles.input}
                       placeholder="Enter quantity"
+                      placeholderTextColor={theme.textSecondary}
                       value={saleQuantity}
                       onChangeText={setSaleQuantity}
                       keyboardType="number-pad"
                     />
                     {saleQuantity && Number.parseInt(saleQuantity) > selectedItem.quantity && (
-                      <Text style={styles.errorText}>
+                      <Text style={[styles.errorText, { color: theme.error }]}>
                         Insufficient stock! Only {selectedItem.quantity} units available
                       </Text>
                     )}
                   </View>
 
                   <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Sale Price per Unit</Text>
+                    <Text style={[styles.label, { color: theme.text }]}>Sale Price per Unit</Text>
                     <TextInput
-                      style={styles.input}
+                      style={dynamicStyles.input}
                       placeholder="0.00"
+                      placeholderTextColor={theme.textSecondary}
                       value={salePrice}
                       onChangeText={setSalePrice}
                       keyboardType="decimal-pad"
                     />
                   </View>
 
-                  <View style={styles.salePreviewContainer}>
+                  <View style={dynamicStyles.salePreviewContainer}>
                     <View style={styles.salePreviewRow}>
-                      <Text style={styles.previewLabel}>Total Amount:</Text>
-                      <Text style={styles.salePreviewValue}>
-                        ₱{((Number.parseFloat(salePrice) || 0) * (Number.parseInt(saleQuantity) || 0)).toFixed(2)}
+                      <Text style={[styles.previewLabel, { color: theme.textSecondary }]}>Total Amount:</Text>
+                      <Text style={[styles.salePreviewValue, { color: theme.primary }]}>
+                        {formatCurrency((Number.parseFloat(salePrice) || 0) * (Number.parseInt(saleQuantity) || 0))}
                       </Text>
                     </View>
-                    <View style={styles.salePreviewRow}>
-                      <Text style={styles.previewLabel}>Profit per Unit:</Text>
-                      <Text style={styles.profitValue}>
-                        ₱{((Number.parseFloat(salePrice) || 0) - selectedItem.cost_price).toFixed(2)}
-                      </Text>
-                    </View>
-                    <View style={styles.salePreviewRow}>
-                      <Text style={styles.previewLabel}>Total Profit:</Text>
-                      <Text style={styles.profitValue}>
-                        ₱
-                        {(
-                          ((Number.parseFloat(salePrice) || 0) - selectedItem.cost_price) *
-                          (Number.parseInt(saleQuantity) || 0)
-                        ).toFixed(2)}
-                      </Text>
-                    </View>
+                    {shouldShowCostPrices() && (
+                      <>
+                        <View style={styles.salePreviewRow}>
+                          <Text style={[styles.previewLabel, { color: theme.textSecondary }]}>Profit per Unit:</Text>
+                          <Text style={[styles.profitValue, { color: theme.success }]}>
+                            {formatCurrency((Number.parseFloat(salePrice) || 0) - selectedItem.cost_price)}
+                          </Text>
+                        </View>
+                        <View style={styles.salePreviewRow}>
+                          <Text style={[styles.previewLabel, { color: theme.textSecondary }]}>Total Profit:</Text>
+                          <Text style={[styles.profitValue, { color: theme.success }]}>
+                            {formatCurrency(calculateProfit(selectedItem.cost_price, Number.parseFloat(salePrice) || 0, Number.parseInt(saleQuantity) || 0))}
+                          </Text>
+                        </View>
+                      </>
+                    )}
                   </View>
                 </>
               )}
@@ -448,23 +575,24 @@ export default function InventoryScreen() {
 
         {/* Add Product Modal */}
         <Modal visible={showAddModal} animationType="slide" presentationStyle="pageSheet">
-          <View style={styles.modalContainer}>
-            <View style={styles.modalHeader}>
+          <View style={dynamicStyles.modalContainer}>
+            <View style={dynamicStyles.modalHeader}>
               <TouchableOpacity onPress={() => setShowAddModal(false)}>
-                <Text style={styles.cancelText}>Cancel</Text>
+                <Text style={[styles.cancelText, { color: theme.textSecondary }]}>Cancel</Text>
               </TouchableOpacity>
-              <Text style={styles.modalTitle}>Add Product</Text>
+              <Text style={[styles.modalTitle, { color: theme.text }]}>Add Product</Text>
               <TouchableOpacity onPress={handleAddProduct}>
-                <Text style={styles.saveText}>Save</Text>
+                <Text style={[styles.saveText, { color: theme.primary }]}>Save</Text>
               </TouchableOpacity>
             </View>
 
             <ScrollView style={styles.modalContent}>
               <View style={styles.inputGroup}>
-                <Text style={styles.label}>Product Name</Text>
+                <Text style={[styles.label, { color: theme.text }]}>Product Name</Text>
                 <TextInput
-                  style={styles.input}
+                  style={dynamicStyles.input}
                   placeholder="Enter product name"
+                  placeholderTextColor={theme.textSecondary}
                   value={productName}
                   onChangeText={setProductName}
                 />
@@ -472,20 +600,22 @@ export default function InventoryScreen() {
 
               <View style={styles.priceInputs}>
                 <View style={styles.halfInput}>
-                  <Text style={styles.label}>Cost Price</Text>
+                  <Text style={[styles.label, { color: theme.text }]}>Cost Price</Text>
                   <TextInput
-                    style={styles.input}
+                    style={dynamicStyles.input}
                     placeholder="0.00"
+                    placeholderTextColor={theme.textSecondary}
                     value={costPrice}
                     onChangeText={setCostPrice}
                     keyboardType="decimal-pad"
                   />
                 </View>
                 <View style={styles.halfInput}>
-                  <Text style={styles.label}>Selling Price</Text>
+                  <Text style={[styles.label, { color: theme.text }]}>Selling Price</Text>
                   <TextInput
-                    style={styles.input}
+                    style={dynamicStyles.input}
                     placeholder="0.00"
+                    placeholderTextColor={theme.textSecondary}
                     value={sellingPrice}
                     onChangeText={setSellingPrice}
                     keyboardType="decimal-pad"
@@ -495,87 +625,128 @@ export default function InventoryScreen() {
 
               <View style={styles.priceInputs}>
                 <View style={styles.halfInput}>
-                  <Text style={styles.label}>Initial Quantity</Text>
+                  <Text style={[styles.label, { color: theme.text }]}>Initial Quantity</Text>
                   <TextInput
-                    style={styles.input}
+                    style={dynamicStyles.input}
                     placeholder="0"
+                    placeholderTextColor={theme.textSecondary}
                     value={quantity}
                     onChangeText={setQuantity}
                     keyboardType="number-pad"
                   />
                 </View>
                 <View style={styles.halfInput}>
-                  <Text style={styles.label}>Min Stock Level</Text>
+                  <Text style={[styles.label, { color: theme.text }]}>Min Stock Level</Text>
                   <TextInput
-                    style={styles.input}
-                    placeholder="0"
+                    style={dynamicStyles.input}
+                    placeholder={getDefaultLowStockThreshold().toString()}
+                    placeholderTextColor={theme.textSecondary}
                     value={minStockLevel}
                     onChangeText={setMinStockLevel}
                     keyboardType="number-pad"
                   />
                 </View>
               </View>
+
+              {/* Profit Preview (if auto calculate is enabled) */}
+              {costPrice && sellingPrice && quantity && (
+                <View style={dynamicStyles.salePreviewContainer}>
+                  <View style={styles.salePreviewRow}>
+                    <Text style={[styles.previewLabel, { color: theme.textSecondary }]}>Initial Stock Value:</Text>
+                    <Text style={[styles.salePreviewValue, { color: theme.primary }]}>
+                      {formatCurrency((Number.parseFloat(costPrice) || 0) * (Number.parseInt(quantity) || 0))}
+                    </Text>
+                  </View>
+                  <View style={styles.salePreviewRow}>
+                    <Text style={[styles.previewLabel, { color: theme.textSecondary }]}>Potential Selling Value:</Text>
+                    <Text style={[styles.salePreviewValue, { color: theme.success }]}>
+                      {formatCurrency((Number.parseFloat(sellingPrice) || 0) * (Number.parseInt(quantity) || 0))}
+                    </Text>
+                  </View>
+                  <View style={styles.salePreviewRow}>
+                    <Text style={[styles.previewLabel, { color: theme.textSecondary }]}>Profit per Unit:</Text>
+                    <Text style={[styles.profitValue, { color: theme.success }]}>
+                      {formatCurrency((Number.parseFloat(sellingPrice) || 0) - (Number.parseFloat(costPrice) || 0))}
+                    </Text>
+                  </View>
+                </View>
+              )}
             </ScrollView>
           </View>
         </Modal>
 
         {/* Stock Update Modal */}
         <Modal visible={showStockModal} animationType="slide" presentationStyle="pageSheet">
-          <View style={styles.modalContainer}>
-            <View style={styles.modalHeader}>
+          <View style={dynamicStyles.modalContainer}>
+            <View style={dynamicStyles.modalHeader}>
               <TouchableOpacity onPress={() => setShowStockModal(false)}>
-                <Text style={styles.cancelText}>Cancel</Text>
+                <Text style={[styles.cancelText, { color: theme.textSecondary }]}>Cancel</Text>
               </TouchableOpacity>
-              <Text style={styles.modalTitle}>{stockType === "in" ? "Pull In Stock" : "Pull Out Stock"}</Text>
+              <Text style={[styles.modalTitle, { color: theme.text }]}>{stockType === "in" ? "Pull In Stock" : "Pull Out Stock"}</Text>
               <TouchableOpacity onPress={handleStockUpdate}>
-                <Text style={styles.saveText}>Update</Text>
+                <Text style={[styles.saveText, { color: theme.primary }]}>Update</Text>
               </TouchableOpacity>
             </View>
 
             <View style={styles.modalContent}>
               {selectedItem && (
                 <>
-                  <View style={styles.selectedItemInfo}>
-                    <Text style={styles.selectedItemName}>{selectedItem.name}</Text>
-                    <Text style={styles.currentStock}>Current Stock: {selectedItem.quantity}</Text>
+                  <View style={dynamicStyles.selectedItemInfo}>
+                    <Text style={[styles.selectedItemName, { color: theme.text }]}>{selectedItem.name}</Text>
+                    <Text style={[styles.currentStock, { color: theme.textSecondary }]}>Current Stock: {selectedItem.quantity}</Text>
                   </View>
 
                   <View style={styles.stockTypeButtons}>
                     <TouchableOpacity
-                      style={[styles.stockTypeButton, stockType === "in" && styles.activeStockType]}
+                      style={[
+                        dynamicStyles.stockTypeButton, 
+                        stockType === "in" && [styles.activeStockType, { backgroundColor: theme.primary }]
+                      ]}
                       onPress={() => setStockType("in")}
                     >
-                      <Ionicons name="add-circle" size={24} color={stockType === "in" ? "#FFFFFF" : "#34C759"} />
-                      <Text style={[styles.stockTypeText, stockType === "in" && styles.activeStockTypeText]}>
+                      <Ionicons name="add-circle" size={24} color={stockType === "in" ? "#FFFFFF" : theme.success} />
+                      <Text style={[
+                        styles.stockTypeText, 
+                        { color: theme.textSecondary },
+                        stockType === "in" && [styles.activeStockTypeText, { color: "#FFFFFF" }]
+                      ]}>
                         Pull In
                       </Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity
-                      style={[styles.stockTypeButton, stockType === "out" && styles.activeStockType]}
+                      style={[
+                        dynamicStyles.stockTypeButton, 
+                        stockType === "out" && [styles.activeStockType, { backgroundColor: theme.primary }]
+                      ]}
                       onPress={() => setStockType("out")}
                     >
-                      <Ionicons name="remove-circle" size={24} color={stockType === "out" ? "#FFFFFF" : "#FF9500"} />
-                      <Text style={[styles.stockTypeText, stockType === "out" && styles.activeStockTypeText]}>
+                      <Ionicons name="remove-circle" size={24} color={stockType === "out" ? "#FFFFFF" : theme.accent} />
+                      <Text style={[
+                        styles.stockTypeText, 
+                        { color: theme.textSecondary },
+                        stockType === "out" && [styles.activeStockTypeText, { color: "#FFFFFF" }]
+                      ]}>
                         Pull Out
                       </Text>
                     </TouchableOpacity>
                   </View>
 
                   <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Quantity</Text>
+                    <Text style={[styles.label, { color: theme.text }]}>Quantity</Text>
                     <TextInput
-                      style={styles.input}
+                      style={dynamicStyles.input}
                       placeholder="Enter quantity"
+                      placeholderTextColor={theme.textSecondary}
                       value={stockQuantity}
                       onChangeText={setStockQuantity}
                       keyboardType="number-pad"
                     />
                   </View>
 
-                  <View style={styles.previewContainer}>
-                    <Text style={styles.previewLabel}>New Stock Level:</Text>
-                    <Text style={styles.previewValue}>
+                  <View style={dynamicStyles.previewContainer}>
+                    <Text style={[styles.previewLabel, { color: theme.textSecondary }]}>New Stock Level:</Text>
+                    <Text style={[styles.previewValue, { color: theme.primary }]}>
                       {stockQuantity
                         ? stockType === "in"
                           ? selectedItem.quantity + Number.parseInt(stockQuantity || "0")
@@ -594,23 +765,10 @@ export default function InventoryScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
-  },
   loadingContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 24,
-    paddingTop: 60,
-    paddingBottom: 20,
   },
   backButton: {
     padding: 8,
@@ -618,7 +776,6 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 20,
     fontWeight: "600",
-    color: "#1C1C1E",
   },
   addButton: {
     padding: 8,
@@ -629,32 +786,13 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     gap: 12,
   },
-  statCard: {
-    flex: 1,
-    backgroundColor: "#F2F2F7",
-    borderRadius: 12,
-    padding: 16,
-    alignItems: "center",
-  },
   statNumber: {
     fontSize: 20,
     fontWeight: "700",
-    color: "#1C1C1E",
     marginBottom: 4,
   },
   statLabel: {
     fontSize: 12,
-    color: "#8E8E93",
-  },
-  searchContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#F2F2F7",
-    borderRadius: 12,
-    marginHorizontal: 24,
-    marginBottom: 20,
-    paddingHorizontal: 16,
-    height: 44,
   },
   searchIcon: {
     marginRight: 12,
@@ -662,22 +800,15 @@ const styles = StyleSheet.create({
   searchInput: {
     flex: 1,
     fontSize: 16,
-    color: "#1C1C1E",
   },
   listContainer: {
     paddingHorizontal: 24,
     paddingBottom: 40,
   },
   itemCard: {
-    backgroundColor: "#F2F2F7",
     borderRadius: 16,
     padding: 16,
     marginBottom: 12,
-  },
-  lowStockCard: {
-    borderWidth: 2,
-    borderColor: "#FF3B30",
-    backgroundColor: "#FFF5F5",
   },
   itemHeader: {
     flexDirection: "row",
@@ -691,13 +822,11 @@ const styles = StyleSheet.create({
   itemName: {
     fontSize: 18,
     fontWeight: "600",
-    color: "#1C1C1E",
     marginBottom: 4,
   },
   lowStockBadge: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FF3B30",
     borderRadius: 12,
     paddingHorizontal: 8,
     paddingVertical: 4,
@@ -722,7 +851,6 @@ const styles = StyleSheet.create({
   },
   priceLabel: {
     fontSize: 14,
-    color: "#8E8E93",
   },
   stockRow: {
     flexDirection: "row",
@@ -732,26 +860,27 @@ const styles = StyleSheet.create({
   stockText: {
     fontSize: 16,
     fontWeight: "600",
-    color: "#1C1C1E",
   },
   valueText: {
     fontSize: 16,
     fontWeight: "600",
-    color: "#007AFF",
   },
   salesRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    flexWrap: "wrap",
   },
   soldText: {
     fontSize: 14,
     fontWeight: "500",
-    color: "#34C759",
+  },
+  profitText: {
+    fontSize: 12,
+    fontWeight: "500",
   },
   minStockText: {
     fontSize: 12,
-    color: "#8E8E93",
   },
   actionButtons: {
     flexDirection: "row",
@@ -766,32 +895,17 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     gap: 6,
   },
-  pullInButton: {
-    backgroundColor: "#E8F5E8",
-  },
-  pullOutButton: {
-    backgroundColor: "#FFF3E0",
-  },
-  saleButton: {
-    backgroundColor: "#E3F2FD",
-  },
   pullInText: {
-    color: "#34C759",
     fontWeight: "600",
     fontSize: 12,
   },
   pullOutText: {
-    color: "#FF9500",
     fontWeight: "600",
     fontSize: 12,
   },
   saleText: {
-    color: "#007AFF",
     fontWeight: "600",
     fontSize: 12,
-  },
-  disabledText: {
-    color: "#C7C7CC",
   },
   emptyContainer: {
     alignItems: "center",
@@ -800,40 +914,21 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 18,
     fontWeight: "600",
-    color: "#8E8E93",
     marginTop: 16,
   },
   emptySubtext: {
     fontSize: 14,
-    color: "#C7C7CC",
     marginTop: 4,
-  },
-  modalContainer: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
-  },
-  modalHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: 24,
-    paddingTop: 60,
-    paddingBottom: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: "#E5E5EA",
   },
   modalTitle: {
     fontSize: 18,
     fontWeight: "600",
-    color: "#1C1C1E",
   },
   cancelText: {
     fontSize: 16,
-    color: "#8E8E93",
   },
   saveText: {
     fontSize: 16,
-    color: "#007AFF",
     fontWeight: "600",
   },
   modalContent: {
@@ -847,19 +942,9 @@ const styles = StyleSheet.create({
   label: {
     fontSize: 16,
     fontWeight: "600",
-    color: "#1C1C1E",
     marginBottom: 8,
   },
-  input: {
-    backgroundColor: "#F2F2F7",
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    height: 52,
-    fontSize: 16,
-    color: "#1C1C1E",
-  },
   errorText: {
-    color: "#FF3B30",
     fontSize: 14,
     marginTop: 8,
     fontWeight: "500",
@@ -872,26 +957,16 @@ const styles = StyleSheet.create({
   halfInput: {
     flex: 1,
   },
-  selectedItemInfo: {
-    backgroundColor: "#F2F2F7",
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 24,
-    alignItems: "center",
-  },
   selectedItemName: {
     fontSize: 18,
     fontWeight: "600",
-    color: "#1C1C1E",
     marginBottom: 4,
   },
   currentStock: {
     fontSize: 14,
-    color: "#8E8E93",
   },
   soldInfo: {
     fontSize: 14,
-    color: "#34C759",
     marginTop: 2,
   },
   stockTypeButtons: {
@@ -899,48 +974,22 @@ const styles = StyleSheet.create({
     gap: 16,
     marginBottom: 24,
   },
-  stockTypeButton: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 16,
-    borderRadius: 12,
-    backgroundColor: "#F2F2F7",
-    gap: 8,
-  },
   activeStockType: {
-    backgroundColor: "#007AFF",
+    // Applied dynamically
   },
   stockTypeText: {
     fontSize: 16,
     fontWeight: "600",
-    color: "#8E8E93",
   },
   activeStockTypeText: {
-    color: "#FFFFFF",
-  },
-  previewContainer: {
-    backgroundColor: "#F2F2F7",
-    borderRadius: 12,
-    padding: 16,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
+    // Applied dynamically
   },
   previewLabel: {
     fontSize: 16,
-    color: "#8E8E93",
   },
   previewValue: {
     fontSize: 18,
     fontWeight: "600",
-    color: "#007AFF",
-  },
-  salePreviewContainer: {
-    backgroundColor: "#F2F2F7",
-    borderRadius: 12,
-    padding: 16,
   },
   salePreviewRow: {
     flexDirection: "row",
@@ -951,11 +1000,9 @@ const styles = StyleSheet.create({
   salePreviewValue: {
     fontSize: 18,
     fontWeight: "600",
-    color: "#007AFF",
   },
   profitValue: {
     fontSize: 16,
     fontWeight: "600",
-    color: "#34C759",
   },
 })

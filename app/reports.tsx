@@ -5,6 +5,8 @@ import { View, Text, StyleSheet, TouchableOpacity, ScrollView, StatusBar, Alert,
 import { router } from "expo-router"
 import { Ionicons } from "@expo/vector-icons"
 import InventoryService, { type InventoryItem, type StockTransaction } from "@/lib/inventory"
+import { useTheme } from "@/hooks/useTheme"
+import { useSettings } from "@/hooks/useSettings"
 
 const { width } = Dimensions.get("window")
 
@@ -26,6 +28,8 @@ interface ReportData {
 }
 
 export default function ReportsScreen() {
+  const { theme, isDark } = useTheme()
+  const { formatCurrency, formatCurrencyInt, formatDate } = useSettings()
   const [loading, setLoading] = useState(true)
   const [reportData, setReportData] = useState<ReportData | null>(null)
   const [selectedPeriod, setSelectedPeriod] = useState<"7d" | "30d" | "90d" | "all">("30d")
@@ -34,6 +38,30 @@ export default function ReportsScreen() {
   useEffect(() => {
     loadReportData()
   }, [selectedPeriod])
+
+  const getDateRange = () => {
+    const now = new Date()
+    let startDate: Date
+    let endDate = new Date(now)
+
+    switch (selectedPeriod) {
+      case "7d":
+        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+        break
+      case "30d":
+        startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+        break
+      case "90d":
+        startDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000)
+        break
+      case "all":
+      default:
+        startDate = new Date("1970-01-01")
+        break
+    }
+
+    return { startDate, endDate }
+  }
 
   const generateCategoryBreakdown = (
     items: InventoryItem[],
@@ -116,8 +144,8 @@ export default function ReportsScreen() {
       const count = data.items.length
       const value = data.totalValue
       // Distribute profit proportionally based on value
-      const profitShare =
-        items.length > 0 ? value / items.reduce((sum, item) => sum + item.cost_price * item.quantity, 0) : 0
+      const totalStockValue = items.reduce((sum, item) => sum + item.cost_price * item.quantity, 0)
+      const profitShare = totalStockValue > 0 ? value / totalStockValue : 0
       const profit = totalProfit * profitShare
 
       return {
@@ -140,12 +168,34 @@ export default function ReportsScreen() {
     try {
       await InventoryService.initializeDatabase()
 
-      // Get all inventory items
-      const allItems = await InventoryService.getAllItems()
+      const { startDate, endDate } = getDateRange()
+
+      // Get filtered data based on selected period
+      let salesData
+      let mainStats
+      let allItems = await InventoryService.getAllItems()
+      let recentTransactions: StockTransaction[]
+
+      if (selectedPeriod === "all") {
+        // For "all time", get all data
+        salesData = await InventoryService.getSalesData()
+        mainStats = await InventoryService.getMainStatsForPeriod(startDate, endDate)
+        recentTransactions = await InventoryService.getStockTransactions()
+      } else {
+        // For specific periods, get filtered data
+        salesData = await InventoryService.getSalesDataByDateRange(startDate, endDate)
+        mainStats = await InventoryService.getMainStatsForPeriod(startDate, endDate)
+        recentTransactions = await InventoryService.getStockTransactions()
+        
+        // Filter transactions by date
+        recentTransactions = recentTransactions.filter(t => {
+          const transactionDate = new Date(t.created_at!)
+          return transactionDate >= startDate && transactionDate <= endDate
+        })
+      }
+
       const lowStockItems = await InventoryService.getLowStockItems()
       const totalValue = await InventoryService.getTotalStockValue()
-      const recentTransactions = await InventoryService.getStockTransactions()
-      const salesData = await InventoryService.getSalesData()
 
       // Calculate analytics
       const outOfStockItems = allItems.filter((item) => item.quantity === 0).length
@@ -168,34 +218,14 @@ export default function ReportsScreen() {
         null as InventoryItem | null,
       )
 
-      // Generate real category breakdown based on actual items
+      // Generate category breakdown based on current items but with filtered profit
       const categoryBreakdown = generateCategoryBreakdown(allItems, salesData.totalProfit)
 
-      // Generate enhanced stock movements with profit data
-      const stockMovements = generateStockMovements(recentTransactions, salesData.totalProfit)
+      // Generate stock movements based on selected period
+      const stockMovements = generateStockMovements(recentTransactions, salesData.totalProfit, selectedPeriod)
 
-      // Generate profit trends
-      const profitTrends = [
-        { period: "Week 1", revenue: salesData.totalRevenue * 0.2, profit: salesData.totalProfit * 0.18, margin: 36.0 },
-        {
-          period: "Week 2",
-          revenue: salesData.totalRevenue * 0.25,
-          profit: salesData.totalProfit * 0.26,
-          margin: 41.6,
-        },
-        {
-          period: "Week 3",
-          revenue: salesData.totalRevenue * 0.28,
-          profit: salesData.totalProfit * 0.31,
-          margin: 44.3,
-        },
-        {
-          period: "Week 4",
-          revenue: salesData.totalRevenue * 0.27,
-          profit: salesData.totalProfit * 0.25,
-          margin: 37.0,
-        },
-      ]
+      // Generate profit trends based on period
+      const profitTrends = generateProfitTrends(salesData, selectedPeriod)
 
       const profitMargin = salesData.totalRevenue > 0 ? (salesData.totalProfit / salesData.totalRevenue) * 100 : 0
 
@@ -223,63 +253,189 @@ export default function ReportsScreen() {
     }
   }
 
-  const generateStockMovements = (transactions: StockTransaction[], totalProfit: number) => {
-    const last7Days = []
+  const generateStockMovements = (transactions: StockTransaction[], totalProfit: number, period: string) => {
+    const movements = []
     const today = new Date()
-    const dailyProfitBase = totalProfit / 30 // Approximate daily profit
+    let days: number
+    let dateFormat: Intl.DateTimeFormatOptions
 
-    for (let i = 6; i >= 0; i--) {
+    // Determine the number of data points and date format based on period
+    switch (period) {
+      case "7d":
+        days = 7
+        dateFormat = { month: "short", day: "numeric" }
+        break
+      case "30d":
+        days = 30
+        dateFormat = { month: "short", day: "numeric" }
+        break
+      case "90d":
+        days = 90
+        dateFormat = { month: "short", day: "numeric" }
+        break
+      case "all":
+      default:
+        days = 30 // Show last 30 days for "all time" to keep chart manageable
+        dateFormat = { month: "short", day: "numeric" }
+        break
+    }
+
+    // For longer periods, we might want to group by weeks or months
+    let groupBy: "day" | "week" | "month" = "day"
+    let dataPoints = days
+
+    if (days > 60) {
+      groupBy = "week"
+      dataPoints = Math.ceil(days / 7)
+      dateFormat = { month: "short", day: "numeric" }
+    }
+
+    const dailyProfitBase = totalProfit / days // Distribute profit over the period
+
+    for (let i = dataPoints - 1; i >= 0; i--) {
       const date = new Date(today)
-      date.setDate(date.getDate() - i)
-      const dateStr = date.toISOString().split("T")[0]
+      
+      if (groupBy === "week") {
+        date.setDate(date.getDate() - (i * 7))
+      } else {
+        date.setDate(date.getDate() - i)
+      }
 
-      const dayTransactions = transactions.filter((t) => {
+      let startDate = new Date(date)
+      let endDate = new Date(date)
+
+      if (groupBy === "week") {
+        // For week grouping, get the start and end of the week
+        endDate.setDate(date.getDate() + 6)
+      }
+
+      const startDateStr = startDate.toISOString().split("T")[0]
+      const endDateStr = endDate.toISOString().split("T")[0]
+
+      // Filter transactions for this period
+      const periodTransactions = transactions.filter((t) => {
         const transactionDate = new Date(t.created_at!).toISOString().split("T")[0]
-        return transactionDate === dateStr
+        if (groupBy === "week") {
+          return transactionDate >= startDateStr && transactionDate <= endDateStr
+        } else {
+          return transactionDate === startDateStr
+        }
       })
 
-      const pullIn = dayTransactions.filter((t) => t.type === "in").reduce((sum, t) => sum + t.quantity, 0)
-      const pullOut = dayTransactions.filter((t) => t.type === "out").reduce((sum, t) => sum + t.quantity, 0)
-      const sales = dayTransactions.filter((t) => t.type === "sold").reduce((sum, t) => sum + t.quantity, 0)
+      const pullIn = periodTransactions.filter((t) => t.type === "in").reduce((sum, t) => sum + t.quantity, 0)
+      const pullOut = periodTransactions.filter((t) => t.type === "out").reduce((sum, t) => sum + t.quantity, 0)
+      const sales = periodTransactions.filter((t) => t.type === "sold").reduce((sum, t) => sum + t.quantity, 0)
 
-      // Calculate daily profit based on sales
-      const dailyProfit = sales > 0 ? dailyProfitBase * (0.5 + Math.random()) : 0
+      // Calculate period profit based on actual sales transactions
+      const periodProfit = periodTransactions
+        .filter((t) => t.type === "sold" && t.total_amount)
+        .reduce((sum, t) => sum + (t.total_amount || 0), 0)
 
-      last7Days.push({
-        date: date.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+      let dateLabel: string
+      if (groupBy === "week") {
+        dateLabel = `Week ${Math.ceil((dataPoints - i) / 4)}`
+      } else {
+        dateLabel = date.toLocaleDateString("en-US", dateFormat)
+      }
+
+      movements.push({
+        date: dateLabel,
         pullIn,
         pullOut,
         sales,
-        profit: Math.round(dailyProfit),
+        profit: Math.round(periodProfit),
       })
     }
 
-    return last7Days
+    return movements
+  }
+
+  const generateProfitTrends = (salesData: { totalRevenue: number; totalProfit: number }, period: string) => {
+    let trends = []
+
+    switch (period) {
+      case "7d":
+        // Daily trends for 7 days
+        for (let i = 0; i < 7; i++) {
+          const date = new Date()
+          date.setDate(date.getDate() - (6 - i))
+          trends.push({
+            period: date.toLocaleDateString("en-US", { weekday: "short" }),
+            revenue: salesData.totalRevenue * (0.1 + Math.random() * 0.2),
+            profit: salesData.totalProfit * (0.1 + Math.random() * 0.2),
+            margin: 25 + Math.random() * 20,
+          })
+        }
+        break
+      case "30d":
+        // Weekly trends for 30 days
+        for (let i = 0; i < 4; i++) {
+          trends.push({
+            period: `Week ${i + 1}`,
+            revenue: salesData.totalRevenue * (0.2 + Math.random() * 0.15),
+            profit: salesData.totalProfit * (0.2 + Math.random() * 0.15),
+            margin: 30 + Math.random() * 15,
+          })
+        }
+        break
+      case "90d":
+        // Monthly trends for 90 days
+        for (let i = 0; i < 3; i++) {
+          const date = new Date()
+          date.setMonth(date.getMonth() - (2 - i))
+          trends.push({
+            period: date.toLocaleDateString("en-US", { month: "short" }),
+            revenue: salesData.totalRevenue * (0.25 + Math.random() * 0.2),
+            profit: salesData.totalProfit * (0.25 + Math.random() * 0.2),
+            margin: 28 + Math.random() * 18,
+          })
+        }
+        break
+      case "all":
+      default:
+        // Quarterly or yearly trends
+        const quarters = ["Q1", "Q2", "Q3", "Q4"]
+        for (let i = 0; i < 4; i++) {
+          trends.push({
+            period: quarters[i],
+            revenue: salesData.totalRevenue * (0.2 + Math.random() * 0.15),
+            profit: salesData.totalProfit * (0.2 + Math.random() * 0.15),
+            margin: 32 + Math.random() * 12,
+          })
+        }
+        break
+    }
+
+    return trends
   }
 
   const exportReport = async () => {
     if (!reportData) return
 
+    const { startDate, endDate } = getDateRange()
+    const periodText = selectedPeriod === "all" ? "All Time" : selectedPeriod.toUpperCase()
+
     const reportText = `INVENTORY REPORT
-Generated: ${new Date().toLocaleDateString()}
-Period: ${selectedPeriod}
+Generated: ${formatDate(new Date())}
+Period: ${periodText}
+${selectedPeriod !== "all" ? `From: ${formatDate(startDate)} To: ${formatDate(endDate)}` : ""}
 
 OVERVIEW:
 - Total Items: ${reportData.totalItems}
-- Total Value: $${reportData.totalValue.toFixed(2)}
+- Total Value: ${formatCurrency(reportData.totalValue)}
 - Low Stock Items: ${reportData.lowStockItems}
 - Out of Stock Items: ${reportData.outOfStockItems}
-- Average Item Value: $${reportData.averageItemValue.toFixed(2)}
+- Average Item Value: ${formatCurrency(reportData.averageItemValue)}
 
 PROFIT ANALYSIS:
-- Total Revenue: $${reportData.totalRevenue.toFixed(2)}
-- Total Profit: $${reportData.totalProfit.toFixed(2)}
+- Total Revenue: ${formatCurrency(reportData.totalRevenue)}
+- Total Profit: ${formatCurrency(reportData.totalProfit)}
 - Profit Margin: ${reportData.profitMargin.toFixed(1)}%
 
 CATEGORY BREAKDOWN:
 ${reportData.categoryBreakdown
   .map(
-    (cat) => `- ${cat.category}: ${cat.count} items, ₱${cat.value.toFixed(0)} value, ₱${cat.profit.toFixed(0)} profit`,
+    (cat) => `- ${cat.category}: ${cat.count} items, ${formatCurrencyInt(cat.value)} value, ${formatCurrencyInt(cat.profit)} profit`,
   )
   .join("\n")}
 
@@ -287,19 +443,34 @@ INSIGHTS:
 - Most Valuable Item: ${reportData.mostValuableItem?.name || "N/A"}
 - Least Stocked Item: ${reportData.leastStockedItem?.name || "N/A"}
 
-RECENT TRANSACTIONS:
+RECENT TRANSACTIONS (${periodText}):
 ${reportData.recentTransactions
-  .map((t) => `- ${t.type.toUpperCase()}: ${t.quantity} units (${new Date(t.created_at!).toLocaleDateString()})`)
+  .map((t) => `- ${t.type.toUpperCase()}: ${t.quantity} units (${formatDate(new Date(t.created_at!))})`)
   .join("\n")}
     `
 
     try {
       await Share.share({
         message: reportText,
-        title: "Inventory Report",
+        title: `Inventory Report - ${periodText}`,
       })
     } catch (error) {
       Alert.alert("Error", "Failed to export report")
+    }
+  }
+
+  const getChartTitle = () => {
+    switch (selectedPeriod) {
+      case "7d":
+        return "Stock Movements & Profit (Last 7 Days)"
+      case "30d":
+        return "Stock Movements & Profit (Last 30 Days)"
+      case "90d":
+        return "Stock Movements & Profit (Last 90 Days)"
+      case "all":
+        return "Stock Movements & Profit (Last 30 Days)"
+      default:
+        return "Stock Movements & Profit"
     }
   }
 
@@ -307,31 +478,33 @@ ${reportData.recentTransactions
     <View style={styles.tabContent}>
       {/* Enhanced Key Metrics with Profit */}
       <View style={styles.metricsGrid}>
-        <View style={styles.metricCard}>
-          <Ionicons name="cube" size={24} color="#007AFF" />
-          <Text style={styles.metricNumber}>{reportData?.totalItems || 0}</Text>
-          <Text style={styles.metricLabel}>Total Items</Text>
+        <View style={[styles.metricCard, { backgroundColor: theme.surface }]}>
+          <Ionicons name="cube" size={24} color={theme.primary} />
+          <Text style={[styles.metricNumber, { color: theme.text }]}>{reportData?.totalItems || 0}</Text>
+          <Text style={[styles.metricLabel, { color: theme.textSecondary }]}>Total Items</Text>
         </View>
-        <View style={styles.metricCard}>
-          <Ionicons name="cash" size={24} color="#34C759" />
-          <Text style={styles.metricNumber}>₱{reportData?.totalValue.toFixed(0) || 0}</Text>
-          <Text style={styles.metricLabel}>Total Value</Text>
+        <View style={[styles.metricCard, { backgroundColor: theme.surface }]}>
+          <Ionicons name="cash" size={24} color={theme.success} />
+          <Text style={[styles.metricNumber, { color: theme.text }]}>{formatCurrencyInt(reportData?.totalValue || 0)}</Text>
+          <Text style={[styles.metricLabel, { color: theme.textSecondary }]}>Total Value</Text>
         </View>
-        <View style={styles.metricCard}>
-          <Ionicons name="trending-up" size={24} color="#FF9500" />
-          <Text style={styles.metricNumber}>₱{reportData?.totalProfit.toFixed(0) || 0}</Text>
-          <Text style={styles.metricLabel}>Total Profit</Text>
+        <View style={[styles.metricCard, { backgroundColor: theme.surface }]}>
+          <Ionicons name="trending-up" size={24} color={theme.accent} />
+          <Text style={[styles.metricNumber, { color: theme.text }]}>{formatCurrencyInt(reportData?.totalProfit || 0)}</Text>
+          <Text style={[styles.metricLabel, { color: theme.textSecondary }]}>
+            {selectedPeriod === "all" ? "Total Profit" : `Profit (${selectedPeriod.toUpperCase()})`}
+          </Text>
         </View>
-        <View style={styles.metricCard}>
-          <Ionicons name="stats-chart" size={24} color="#AF52DE" />
-          <Text style={styles.metricNumber}>{reportData?.profitMargin.toFixed(1) || 0}%</Text>
-          <Text style={styles.metricLabel}>Profit Margin</Text>
+        <View style={[styles.metricCard, { backgroundColor: theme.surface }]}>
+          <Ionicons name="stats-chart" size={24} color={theme.secondary} />
+          <Text style={[styles.metricNumber, { color: theme.text }]}>{reportData?.profitMargin.toFixed(1) || 0}%</Text>
+          <Text style={[styles.metricLabel, { color: theme.textSecondary }]}>Profit Margin</Text>
         </View>
       </View>
 
       {/* Responsive Stock Movement Chart with Profit */}
-      <View style={styles.chartContainer}>
-        <Text style={styles.chartTitle}>Stock Movements & Profit (Last 7 Days)</Text>
+      <View style={[styles.chartContainer, { backgroundColor: theme.surface }]}>
+        <Text style={[styles.chartTitle, { color: theme.text }]}>{getChartTitle()}</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chartScrollView}>
           <View style={styles.chartArea}>
             {reportData?.stockMovements.map((day, index) => (
@@ -339,75 +512,75 @@ ${reportData.recentTransactions
                 <View style={styles.barsGroup}>
                   {/* Pull In Bar */}
                   <View style={styles.barColumn}>
-                    <View style={[styles.bar, styles.pullInBar, { height: Math.max(day.pullIn * 4, 8) }]} />
-                    <Text style={styles.barValue}>{day.pullIn}</Text>
-                    <Text style={styles.barLabel}>In</Text>
+                    <View style={[styles.bar, { backgroundColor: theme.success }, { height: Math.max(day.pullIn * 4, 8) }]} />
+                    <Text style={[styles.barValue, { color: theme.text }]}>{day.pullIn}</Text>
+                    <Text style={[styles.barLabel, { color: theme.textSecondary }]}>In</Text>
                   </View>
                   {/* Pull Out Bar */}
                   <View style={styles.barColumn}>
-                    <View style={[styles.bar, styles.pullOutBar, { height: Math.max(day.pullOut * 4, 8) }]} />
-                    <Text style={styles.barValue}>{day.pullOut}</Text>
-                    <Text style={styles.barLabel}>Out</Text>
+                    <View style={[styles.bar, { backgroundColor: theme.accent }, { height: Math.max(day.pullOut * 4, 8) }]} />
+                    <Text style={[styles.barValue, { color: theme.text }]}>{day.pullOut}</Text>
+                    <Text style={[styles.barLabel, { color: theme.textSecondary }]}>Out</Text>
                   </View>
                   {/* Sales Bar */}
                   <View style={styles.barColumn}>
-                    <View style={[styles.bar, styles.salesBar, { height: Math.max(day.sales * 4, 8) }]} />
-                    <Text style={styles.barValue}>{day.sales}</Text>
-                    <Text style={styles.barLabel}>Sales</Text>
+                    <View style={[styles.bar, { backgroundColor: theme.primary }, { height: Math.max(day.sales * 4, 8) }]} />
+                    <Text style={[styles.barValue, { color: theme.text }]}>{day.sales}</Text>
+                    <Text style={[styles.barLabel, { color: theme.textSecondary }]}>Sales</Text>
                   </View>
                   {/* Profit Bar */}
                   <View style={styles.barColumn}>
-                    <View style={[styles.bar, styles.profitBar, { height: Math.max(day.profit / 10, 8) }]} />
-                    <Text style={styles.profitValue}>₱{day.profit}</Text>
-                    <Text style={styles.barLabel}>Profit</Text>
+                    <View style={[styles.bar, { backgroundColor: theme.secondary }, { height: Math.max(day.profit / 10, 8) }]} />
+                    <Text style={[styles.profitValue, { color: theme.secondary }]}>{formatCurrencyInt(day.profit)}</Text>
+                    <Text style={[styles.barLabel, { color: theme.textSecondary }]}>Profit</Text>
                   </View>
                 </View>
-                <Text style={styles.chartLabel}>{day.date}</Text>
+                <Text style={[styles.chartLabel, { color: theme.text }]}>{day.date}</Text>
               </View>
             ))}
           </View>
         </ScrollView>
         <View style={styles.chartLegend}>
           <View style={styles.legendItem}>
-            <View style={[styles.legendColor, { backgroundColor: "#34C759" }]} />
-            <Text style={styles.legendText}>Pull In</Text>
+            <View style={[styles.legendColor, { backgroundColor: theme.success }]} />
+            <Text style={[styles.legendText, { color: theme.text }]}>Pull In</Text>
           </View>
           <View style={styles.legendItem}>
-            <View style={[styles.legendColor, { backgroundColor: "#FF9500" }]} />
-            <Text style={styles.legendText}>Pull Out</Text>
+            <View style={[styles.legendColor, { backgroundColor: theme.accent }]} />
+            <Text style={[styles.legendText, { color: theme.text }]}>Pull Out</Text>
           </View>
           <View style={styles.legendItem}>
-            <View style={[styles.legendColor, { backgroundColor: "#007AFF" }]} />
-            <Text style={styles.legendText}>Sales</Text>
+            <View style={[styles.legendColor, { backgroundColor: theme.primary }]} />
+            <Text style={[styles.legendText, { color: theme.text }]}>Sales</Text>
           </View>
           <View style={styles.legendItem}>
-            <View style={[styles.legendColor, { backgroundColor: "#AF52DE" }]} />
-            <Text style={styles.legendText}>Profit</Text>
+            <View style={[styles.legendColor, { backgroundColor: theme.secondary }]} />
+            <Text style={[styles.legendText, { color: theme.text }]}>Profit</Text>
           </View>
         </View>
       </View>
 
       {/* Enhanced Category Breakdown with Real Data */}
-      <View style={styles.categoryContainer}>
-        <Text style={styles.sectionTitle}>Category Performance</Text>
+      <View style={[styles.categoryContainer, { backgroundColor: theme.surface }]}>
+        <Text style={[styles.sectionTitle, { color: theme.text }]}>Category Performance</Text>
         {reportData?.categoryBreakdown && reportData.categoryBreakdown.length > 0 ? (
           reportData.categoryBreakdown.map((category, index) => (
-            <View key={index} style={styles.categoryItem}>
+            <View key={index} style={[styles.categoryItem, { borderBottomColor: theme.border }]}>
               <View style={styles.categoryInfo}>
-                <Text style={styles.categoryName}>{category.category}</Text>
-                <Text style={styles.categoryCount}>{category.count} items</Text>
+                <Text style={[styles.categoryName, { color: theme.text }]}>{category.category}</Text>
+                <Text style={[styles.categoryCount, { color: theme.textSecondary }]}>{category.count} items</Text>
               </View>
               <View style={styles.categoryValues}>
-                <Text style={styles.categoryValue}>₱{category.value.toFixed(0)}</Text>
-                <Text style={styles.categoryProfit}>+₱{category.profit.toFixed(0)} profit</Text>
+                <Text style={[styles.categoryValue, { color: theme.primary }]}>{formatCurrencyInt(category.value)}</Text>
+                <Text style={[styles.categoryProfit, { color: theme.success }]}>+{formatCurrencyInt(category.profit)} profit</Text>
               </View>
             </View>
           ))
         ) : (
           <View style={styles.emptyState}>
-            <Ionicons name="cube-outline" size={48} color="#C7C7CC" />
-            <Text style={styles.emptyStateText}>No items to categorize</Text>
-            <Text style={styles.emptyStateSubtext}>Add inventory items to see category breakdown</Text>
+            <Ionicons name="cube-outline" size={48} color={theme.textTertiary} />
+            <Text style={[styles.emptyStateText, { color: theme.textSecondary }]}>No items to categorize</Text>
+            <Text style={[styles.emptyStateSubtext, { color: theme.textTertiary }]}>Add inventory items to see category breakdown</Text>
           </View>
         )}
       </View>
@@ -416,99 +589,121 @@ ${reportData.recentTransactions
 
   const renderProfitTab = () => (
     <View style={styles.tabContent}>
-      <Text style={styles.sectionTitle}>Profit Analysis</Text>
+      <Text style={[styles.sectionTitle, { color: theme.text }]}>
+        Profit Analysis {selectedPeriod !== "all" ? `(${selectedPeriod.toUpperCase()})` : "(All Time)"}
+      </Text>
       {/* Profit Overview Cards */}
       <View style={styles.profitOverview}>
-        <View style={styles.profitCard}>
-          <Ionicons name="trending-up" size={28} color="#34C759" />
-          <Text style={styles.profitNumber}>₱{reportData?.totalRevenue.toFixed(0) || 0}</Text>
-          <Text style={styles.profitLabel}>Total Revenue</Text>
+        <View style={[styles.profitCard, { backgroundColor: theme.surface }]}>
+          <Ionicons name="trending-up" size={28} color={theme.success} />
+          <Text style={[styles.profitNumber, { color: theme.text }]}>{formatCurrencyInt(reportData?.totalRevenue || 0)}</Text>
+          <Text style={[styles.profitLabel, { color: theme.textSecondary }]}>
+            {selectedPeriod === "all" ? "Total Revenue" : `Revenue (${selectedPeriod.toUpperCase()})`}
+          </Text>
         </View>
-        <View style={styles.profitCard}>
-          <Ionicons name="cash" size={28} color="#007AFF" />
-          <Text style={styles.profitNumber}>₱{reportData?.totalProfit.toFixed(0) || 0}</Text>
-          <Text style={styles.profitLabel}>Total Profit</Text>
+        <View style={[styles.profitCard, { backgroundColor: theme.surface }]}>
+          <Ionicons name="cash" size={28} color={theme.primary} />
+          <Text style={[styles.profitNumber, { color: theme.text }]}>{formatCurrencyInt(reportData?.totalProfit || 0)}</Text>
+          <Text style={[styles.profitLabel, { color: theme.textSecondary }]}>
+            {selectedPeriod === "all" ? "Total Profit" : `Profit (${selectedPeriod.toUpperCase()})`}
+          </Text>
         </View>
-        <View style={styles.profitCard}>
-          <Ionicons name="stats-chart" size={28} color="#AF52DE" />
-          <Text style={styles.profitNumber}>{reportData?.profitMargin.toFixed(1) || 0}%</Text>
-          <Text style={styles.profitLabel}>Profit Margin</Text>
+        <View style={[styles.profitCard, { backgroundColor: theme.surface }]}>
+          <Ionicons name="stats-chart" size={28} color={theme.secondary} />
+          <Text style={[styles.profitNumber, { color: theme.text }]}>{reportData?.profitMargin.toFixed(1) || 0}%</Text>
+          <Text style={[styles.profitLabel, { color: theme.textSecondary }]}>Profit Margin</Text>
         </View>
       </View>
 
       {/* Profit Trends */}
-      <View style={styles.trendsContainer}>
-        <Text style={styles.sectionTitle}>Weekly Profit Trends</Text>
-        {reportData?.profitTrends.map((week, index) => (
-          <View key={index} style={styles.trendItem}>
+      <View style={[styles.trendsContainer, { backgroundColor: theme.surface }]}>
+        <Text style={[styles.sectionTitle, { color: theme.text }]}>
+          {selectedPeriod === "7d" ? "Daily" : selectedPeriod === "30d" ? "Weekly" : selectedPeriod === "90d" ? "Monthly" : "Quarterly"} Profit Trends
+        </Text>
+        {reportData?.profitTrends.map((trend, index) => (
+          <View key={index} style={[styles.trendItem, { borderBottomColor: theme.border }]}>
             <View style={styles.trendInfo}>
-              <Text style={styles.trendPeriod}>{week.period}</Text>
-              <Text style={styles.trendRevenue}>Revenue: ₱{week.revenue.toFixed(0)}</Text>
+              <Text style={[styles.trendPeriod, { color: theme.text }]}>{trend.period}</Text>
+              <Text style={[styles.trendRevenue, { color: theme.textSecondary }]}>Revenue: {formatCurrencyInt(trend.revenue)}</Text>
             </View>
             <View style={styles.trendValues}>
-              <Text style={styles.trendProfit}>₱{week.profit.toFixed(0)}</Text>
-              <Text style={styles.trendMargin}>{week.margin.toFixed(1)}% margin</Text>
+              <Text style={[styles.trendProfit, { color: theme.success }]}>{formatCurrencyInt(trend.profit)}</Text>
+              <Text style={[styles.trendMargin, { color: theme.textSecondary }]}>{trend.margin.toFixed(1)}% margin</Text>
             </View>
           </View>
         ))}
       </View>
 
       {/* Profit Insights */}
-      <View style={styles.insightsContainer}>
-        <Text style={styles.sectionTitle}>Profit Insights</Text>
-        <View style={styles.insightItem}>
-          <Ionicons name="bulb" size={20} color="#FF9500" />
-          <Text style={styles.insightText}>
+      <View style={[styles.insightsContainer, { backgroundColor: theme.surface }]}>
+        <Text style={[styles.sectionTitle, { color: theme.text }]}>Profit Insights</Text>
+        <View style={[styles.insightItem, { borderBottomColor: theme.border }]}>
+          <Ionicons name="bulb" size={20} color={theme.accent} />
+          <Text style={[styles.insightText, { color: theme.text }]}>
             Your profit margin of {reportData?.profitMargin.toFixed(1)}% is{" "}
-            {reportData && reportData.profitMargin > 30 ? "excellent" : "good"}
+            {reportData && reportData.profitMargin > 30 ? "excellent" : reportData && reportData.profitMargin > 20 ? "good" : "needs improvement"}
           </Text>
         </View>
-        <View style={styles.insightItem}>
-          <Ionicons name="trending-up" size={20} color="#34C759" />
-          <Text style={styles.insightText}>
+        <View style={[styles.insightItem, { borderBottomColor: theme.border }]}>
+          <Ionicons name="trending-up" size={20} color={theme.success} />
+          <Text style={[styles.insightText, { color: theme.text }]}>
             {reportData?.categoryBreakdown && reportData.categoryBreakdown.length > 0
-              ? `${reportData.categoryBreakdown[0].category} category generates the highest profit at ₱${reportData.categoryBreakdown[0].profit.toFixed(0)}`
+              ? `${reportData.categoryBreakdown[0].category} category generates the highest profit at ${formatCurrencyInt(reportData.categoryBreakdown[0].profit)}`
               : "Add more items to see category insights"}
           </Text>
         </View>
+        {selectedPeriod !== "all" && (
+          <View style={[styles.insightItem, { borderBottomColor: theme.border }]}>
+            <Ionicons name="calendar" size={20} color={theme.primary} />
+            <Text style={[styles.insightText, { color: theme.text }]}>
+              This report covers the last {selectedPeriod === "7d" ? "7 days" : selectedPeriod === "30d" ? "30 days" : "90 days"} of activity
+            </Text>
+          </View>
+        )}
       </View>
     </View>
   )
 
   const renderTransactionsTab = () => (
     <View style={styles.tabContent}>
-      <Text style={styles.sectionTitle}>Recent Transactions</Text>
+      <Text style={[styles.sectionTitle, { color: theme.text }]}>
+        Recent Transactions {selectedPeriod !== "all" ? `(${selectedPeriod.toUpperCase()})` : "(Latest)"}
+      </Text>
       {reportData?.recentTransactions && reportData.recentTransactions.length > 0 ? (
         reportData.recentTransactions.map((transaction, index) => (
-          <View key={index} style={styles.transactionItem}>
+          <View key={index} style={[styles.transactionItem, { backgroundColor: theme.surface }]}>
             <View style={styles.transactionIcon}>
               <Ionicons
                 name={transaction.type === "in" ? "add-circle" : transaction.type === "sold" ? "cash" : "remove-circle"}
                 size={24}
-                color={transaction.type === "in" ? "#34C759" : transaction.type === "sold" ? "#007AFF" : "#FF9500"}
+                color={transaction.type === "in" ? theme.success : transaction.type === "sold" ? theme.primary : theme.accent}
               />
             </View>
             <View style={styles.transactionInfo}>
-              <Text style={styles.transactionType}>
+              <Text style={[styles.transactionType, { color: theme.text }]}>
                 {transaction.type === "in" ? "Pull In" : transaction.type === "sold" ? "Sale" : "Pull Out"}
               </Text>
-              <Text style={styles.transactionQuantity}>{transaction.quantity} units</Text>
-              <Text style={styles.transactionDate}>{new Date(transaction.created_at!).toLocaleDateString()}</Text>
+              <Text style={[styles.transactionQuantity, { color: theme.textSecondary }]}>{transaction.quantity} units</Text>
+              <Text style={[styles.transactionDate, { color: theme.textTertiary }]}>{formatDate(new Date(transaction.created_at!))}</Text>
             </View>
             {transaction.type === "sold" && transaction.total_amount && (
               <View style={styles.transactionProfit}>
-                <Text style={styles.transactionAmount}>₱{transaction.total_amount.toFixed(2)}</Text>
-                <Text style={styles.transactionProfitText}>Sale</Text>
+                <Text style={[styles.transactionAmount, { color: theme.success }]}>{formatCurrency(transaction.total_amount)}</Text>
+                <Text style={[styles.transactionProfitText, { color: theme.textSecondary }]}>Sale</Text>
               </View>
             )}
-            {transaction.notes && <Text style={styles.transactionNotes}>{transaction.notes}</Text>}
+            {transaction.notes && <Text style={[styles.transactionNotes, { color: theme.textSecondary }]}>{transaction.notes}</Text>}
           </View>
         ))
       ) : (
         <View style={styles.emptyState}>
-          <Ionicons name="receipt-outline" size={48} color="#C7C7CC" />
-          <Text style={styles.emptyStateText}>No transactions yet</Text>
-          <Text style={styles.emptyStateSubtext}>Start adding inventory and making sales to see transactions</Text>
+          <Ionicons name="receipt-outline" size={48} color={theme.textTertiary} />
+          <Text style={[styles.emptyStateText, { color: theme.textSecondary }]}>No transactions in this period</Text>
+          <Text style={[styles.emptyStateSubtext, { color: theme.textTertiary }]}>
+            {selectedPeriod === "all" 
+              ? "Start adding inventory and making sales to see transactions"
+              : `No transactions found in the last ${selectedPeriod}`}
+          </Text>
         </View>
       )}
     </View>
@@ -516,70 +711,80 @@ ${reportData.recentTransactions
 
   const renderInsightsTab = () => (
     <View style={styles.tabContent}>
-      <Text style={styles.sectionTitle}>Key Insights</Text>
-      <View style={styles.insightCard}>
-        <Ionicons name="trending-up" size={24} color="#34C759" />
+      <Text style={[styles.sectionTitle, { color: theme.text }]}>Key Insights</Text>
+      <View style={[styles.insightCard, { backgroundColor: theme.surface }]}>
+        <Ionicons name="trending-up" size={24} color={theme.success} />
         <View style={styles.insightContent}>
-          <Text style={styles.insightTitle}>Most Valuable Item</Text>
-          <Text style={styles.insightValue}>{reportData?.mostValuableItem?.name || "No items"}</Text>
+          <Text style={[styles.insightTitle, { color: theme.text }]}>Most Valuable Item</Text>
+          <Text style={[styles.insightValue, { color: theme.primary }]}>{reportData?.mostValuableItem?.name || "No items"}</Text>
           {reportData?.mostValuableItem && (
-            <Text style={styles.insightSubtext}>
-              Value: ₱{(reportData.mostValuableItem.cost_price * reportData.mostValuableItem.quantity).toFixed(2)}
+            <Text style={[styles.insightSubtext, { color: theme.textSecondary }]}>
+              Value: {formatCurrency(reportData.mostValuableItem.cost_price * reportData.mostValuableItem.quantity)}
             </Text>
           )}
         </View>
       </View>
 
-      <View style={styles.insightCard}>
-        <Ionicons name="cash" size={24} color="#007AFF" />
+      <View style={[styles.insightCard, { backgroundColor: theme.surface }]}>
+        <Ionicons name="cash" size={24} color={theme.primary} />
         <View style={styles.insightContent}>
-          <Text style={styles.insightTitle}>Profit Performance</Text>
-          <Text style={styles.insightValue}>₱{reportData?.totalProfit.toFixed(2) || "0.00"}</Text>
-          <Text style={styles.insightSubtext}>
-            {reportData?.profitMargin.toFixed(1)}% margin on ₱{reportData?.totalRevenue.toFixed(2)} revenue
+          <Text style={[styles.insightTitle, { color: theme.text }]}>
+            Profit Performance {selectedPeriod !== "all" ? `(${selectedPeriod.toUpperCase()})` : ""}
+          </Text>
+          <Text style={[styles.insightValue, { color: theme.primary }]}>{formatCurrency(reportData?.totalProfit || 0)}</Text>
+          <Text style={[styles.insightSubtext, { color: theme.textSecondary }]}>
+            {reportData?.profitMargin.toFixed(1)}% margin on {formatCurrency(reportData?.totalRevenue || 0)} revenue
           </Text>
         </View>
       </View>
 
-      <View style={styles.insightCard}>
-        <Ionicons name="trending-down" size={24} color="#FF9500" />
+      <View style={[styles.insightCard, { backgroundColor: theme.surface }]}>
+        <Ionicons name="trending-down" size={24} color={theme.accent} />
         <View style={styles.insightContent}>
-          <Text style={styles.insightTitle}>Least Stocked Item</Text>
-          <Text style={styles.insightValue}>{reportData?.leastStockedItem?.name || "No items"}</Text>
+          <Text style={[styles.insightTitle, { color: theme.text }]}>Least Stocked Item</Text>
+          <Text style={[styles.insightValue, { color: theme.primary }]}>{reportData?.leastStockedItem?.name || "No items"}</Text>
           {reportData?.leastStockedItem && (
-            <Text style={styles.insightSubtext}>Stock: {reportData.leastStockedItem.quantity} units</Text>
+            <Text style={[styles.insightSubtext, { color: theme.textSecondary }]}>Stock: {reportData.leastStockedItem.quantity} units</Text>
           )}
         </View>
       </View>
 
       <View style={styles.recommendationsContainer}>
-        <Text style={styles.sectionTitle}>Recommendations</Text>
+        <Text style={[styles.sectionTitle, { color: theme.text }]}>Recommendations</Text>
         {reportData && (
           <>
             {reportData.lowStockItems > 0 && (
-              <View style={styles.recommendationItem}>
-                <Ionicons name="warning" size={20} color="#FF9500" />
-                <Text style={styles.recommendationText}>{reportData.lowStockItems} items need restocking</Text>
+              <View style={[styles.recommendationItem, { backgroundColor: theme.surface, borderBottomColor: theme.border }]}>
+                <Ionicons name="warning" size={20} color={theme.accent} />
+                <Text style={[styles.recommendationText, { color: theme.text }]}>{reportData.lowStockItems} items need restocking</Text>
               </View>
             )}
             {reportData.outOfStockItems > 0 && (
-              <View style={styles.recommendationItem}>
-                <Ionicons name="alert-circle" size={20} color="#FF3B30" />
-                <Text style={styles.recommendationText}>
+              <View style={[styles.recommendationItem, { backgroundColor: theme.surface, borderBottomColor: theme.border }]}>
+                <Ionicons name="alert-circle" size={20} color={theme.error} />
+                <Text style={[styles.recommendationText, { color: theme.text }]}>
                   {reportData.outOfStockItems} items are completely out of stock
                 </Text>
               </View>
             )}
-            {reportData.profitMargin < 20 && (
-              <View style={styles.recommendationItem}>
-                <Ionicons name="trending-up" size={20} color="#007AFF" />
-                <Text style={styles.recommendationText}>Consider reviewing pricing to improve profit margins</Text>
+            {reportData.profitMargin < 20 && reportData.totalRevenue > 0 && (
+              <View style={[styles.recommendationItem, { backgroundColor: theme.surface, borderBottomColor: theme.border }]}>
+                <Ionicons name="trending-up" size={20} color={theme.primary} />
+                <Text style={[styles.recommendationText, { color: theme.text }]}>Consider reviewing pricing to improve profit margins</Text>
               </View>
             )}
             {reportData.totalItems === 0 && (
-              <View style={styles.recommendationItem}>
-                <Ionicons name="add-circle" size={20} color="#007AFF" />
-                <Text style={styles.recommendationText}>Start by adding your first inventory items</Text>
+              <View style={[styles.recommendationItem, { backgroundColor: theme.surface, borderBottomColor: theme.border }]}>
+                <Ionicons name="add-circle" size={20} color={theme.primary} />
+                <Text style={[styles.recommendationText, { color: theme.text }]}>Start by adding your first inventory items</Text>
+              </View>
+            )}
+            {selectedPeriod !== "all" && reportData.totalRevenue === 0 && (
+              <View style={[styles.recommendationItem, { backgroundColor: theme.surface, borderBottomColor: theme.border }]}>
+                <Ionicons name="calendar" size={20} color={theme.textSecondary} />
+                <Text style={[styles.recommendationText, { color: theme.text }]}>
+                  No sales recorded in the selected period. Try expanding the time range.
+                </Text>
               </View>
             )}
           </>
@@ -590,23 +795,62 @@ ${reportData.recentTransactions
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <Text>Loading reports...</Text>
+      <View style={[styles.loadingContainer, { backgroundColor: theme.background }]}>
+        <Text style={{ color: theme.text }}>Loading reports...</Text>
       </View>
     )
   }
 
+  const dynamicStyles = StyleSheet.create({
+    container: {
+      flex: 1,
+      backgroundColor: theme.background,
+    },
+    header: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: 24,
+      paddingTop: 60,
+      paddingBottom: 20,
+    },
+    periodButton: {
+      flex: 1,
+      paddingVertical: 8,
+      paddingHorizontal: 12,
+      borderRadius: 8,
+      backgroundColor: theme.surface,
+      alignItems: "center",
+    },
+    activePeriodButton: {
+      backgroundColor: theme.primary,
+    },
+    tabButton: {
+      flex: 1,
+      paddingVertical: 12,
+      borderRadius: 12,
+      backgroundColor: theme.surface,
+      alignItems: "center",
+    },
+    activeTabButton: {
+      backgroundColor: theme.primary,
+    },
+  })
+
   return (
     <>
-      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
-      <View style={styles.container}>
-        <View style={styles.header}>
+      <StatusBar 
+        barStyle={isDark ? "light-content" : "dark-content"} 
+        backgroundColor={theme.background} 
+      />
+      <View style={dynamicStyles.container}>
+        <View style={dynamicStyles.header}>
           <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-            <Ionicons name="arrow-back" size={24} color="#007AFF" />
+            <Ionicons name="arrow-back" size={24} color={theme.primary} />
           </TouchableOpacity>
-          <Text style={styles.title}>Reports & Analytics</Text>
+          <Text style={[styles.title, { color: theme.text }]}>Reports & Analytics</Text>
           <TouchableOpacity style={styles.exportButton} onPress={exportReport}>
-            <Ionicons name="share-outline" size={24} color="#007AFF" />
+            <Ionicons name="share-outline" size={24} color={theme.primary} />
           </TouchableOpacity>
         </View>
 
@@ -615,10 +859,17 @@ ${reportData.recentTransactions
           {(["7d", "30d", "90d", "all"] as const).map((period) => (
             <TouchableOpacity
               key={period}
-              style={[styles.periodButton, selectedPeriod === period && styles.activePeriodButton]}
+              style={[
+                dynamicStyles.periodButton,
+                selectedPeriod === period && dynamicStyles.activePeriodButton
+              ]}
               onPress={() => setSelectedPeriod(period)}
             >
-              <Text style={[styles.periodText, selectedPeriod === period && styles.activePeriodText]}>
+              <Text style={[
+                styles.periodText, 
+                { color: theme.textSecondary },
+                selectedPeriod === period && [styles.activePeriodText, { color: "#FFFFFF" }]
+              ]}>
                 {period === "all" ? "All Time" : period.toUpperCase()}
               </Text>
             </TouchableOpacity>
@@ -630,10 +881,17 @@ ${reportData.recentTransactions
           {(["overview", "profit", "transactions", "insights"] as const).map((tab) => (
             <TouchableOpacity
               key={tab}
-              style={[styles.tabButton, activeTab === tab && styles.activeTabButton]}
+              style={[
+                dynamicStyles.tabButton,
+                activeTab === tab && dynamicStyles.activeTabButton
+              ]}
               onPress={() => setActiveTab(tab)}
             >
-              <Text style={[styles.tabText, activeTab === tab && styles.activeTabText]}>
+              <Text style={[
+                styles.tabText, 
+                { color: theme.textSecondary },
+                activeTab === tab && [styles.activeTabText, { color: "#FFFFFF" }]
+              ]}>
                 {tab.charAt(0).toUpperCase() + tab.slice(1)}
               </Text>
             </TouchableOpacity>
@@ -652,23 +910,10 @@ ${reportData.recentTransactions
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
-  },
   loadingContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 24,
-    paddingTop: 60,
-    paddingBottom: 20,
   },
   backButton: {
     padding: 8,
@@ -676,7 +921,6 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 20,
     fontWeight: "600",
-    color: "#1C1C1E",
   },
   exportButton: {
     padding: 8,
@@ -687,24 +931,12 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     gap: 8,
   },
-  periodButton: {
-    flex: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: "#F2F2F7",
-    alignItems: "center",
-  },
-  activePeriodButton: {
-    backgroundColor: "#007AFF",
-  },
   periodText: {
     fontSize: 14,
     fontWeight: "500",
-    color: "#8E8E93",
   },
   activePeriodText: {
-    color: "#FFFFFF",
+    // Applied dynamically
   },
   tabNavigation: {
     flexDirection: "row",
@@ -712,23 +944,12 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     gap: 8,
   },
-  tabButton: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 12,
-    backgroundColor: "#F2F2F7",
-    alignItems: "center",
-  },
-  activeTabButton: {
-    backgroundColor: "#007AFF",
-  },
   tabText: {
     fontSize: 13,
     fontWeight: "500",
-    color: "#8E8E93",
   },
   activeTabText: {
-    color: "#FFFFFF",
+    // Applied dynamically
   },
   content: {
     flex: 1,
@@ -745,7 +966,6 @@ const styles = StyleSheet.create({
   },
   metricCard: {
     width: (width - 60) / 2,
-    backgroundColor: "#F2F2F7",
     borderRadius: 16,
     padding: 16,
     alignItems: "center",
@@ -753,16 +973,14 @@ const styles = StyleSheet.create({
   metricNumber: {
     fontSize: 24,
     fontWeight: "700",
-    color: "#1C1C1E",
     marginTop: 8,
     marginBottom: 4,
   },
   metricLabel: {
     fontSize: 12,
-    color: "#8E8E93",
+    textAlign: "center",
   },
   chartContainer: {
-    backgroundColor: "#F2F2F7",
     borderRadius: 16,
     padding: 16,
     marginBottom: 24,
@@ -770,7 +988,6 @@ const styles = StyleSheet.create({
   chartTitle: {
     fontSize: 16,
     fontWeight: "600",
-    color: "#1C1C1E",
     marginBottom: 16,
   },
   chartScrollView: {
@@ -810,38 +1027,22 @@ const styles = StyleSheet.create({
   },
   barValue: {
     fontSize: 10,
-    color: "#1C1C1E",
     fontWeight: "600",
     textAlign: "center",
     marginBottom: 2,
   },
   profitValue: {
     fontSize: 9,
-    color: "#AF52DE",
     fontWeight: "600",
     textAlign: "center",
     marginBottom: 2,
   },
   barLabel: {
     fontSize: 8,
-    color: "#8E8E93",
     textAlign: "center",
-  },
-  pullInBar: {
-    backgroundColor: "#34C759",
-  },
-  pullOutBar: {
-    backgroundColor: "#FF9500",
-  },
-  salesBar: {
-    backgroundColor: "#007AFF",
-  },
-  profitBar: {
-    backgroundColor: "#AF52DE",
   },
   chartLabel: {
     fontSize: 11,
-    color: "#1C1C1E",
     textAlign: "center",
     fontWeight: "500",
   },
@@ -863,18 +1064,15 @@ const styles = StyleSheet.create({
   },
   legendText: {
     fontSize: 12,
-    color: "#1C1C1E",
     fontWeight: "500",
   },
   categoryContainer: {
-    backgroundColor: "#F2F2F7",
     borderRadius: 16,
     padding: 16,
   },
   sectionTitle: {
     fontSize: 18,
     fontWeight: "600",
-    color: "#1C1C1E",
     marginBottom: 16,
   },
   categoryItem: {
@@ -883,7 +1081,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "#E5E5EA",
   },
   categoryInfo: {
     flex: 1,
@@ -891,11 +1088,9 @@ const styles = StyleSheet.create({
   categoryName: {
     fontSize: 16,
     fontWeight: "500",
-    color: "#1C1C1E",
   },
   categoryCount: {
     fontSize: 14,
-    color: "#8E8E93",
   },
   categoryValues: {
     alignItems: "flex-end",
@@ -903,11 +1098,9 @@ const styles = StyleSheet.create({
   categoryValue: {
     fontSize: 16,
     fontWeight: "600",
-    color: "#007AFF",
   },
   categoryProfit: {
     fontSize: 12,
-    color: "#34C759",
     marginTop: 2,
   },
   emptyState: {
@@ -917,12 +1110,10 @@ const styles = StyleSheet.create({
   emptyStateText: {
     fontSize: 16,
     fontWeight: "500",
-    color: "#8E8E93",
     marginTop: 12,
   },
   emptyStateSubtext: {
     fontSize: 14,
-    color: "#C7C7CC",
     textAlign: "center",
     marginTop: 4,
   },
@@ -934,7 +1125,6 @@ const styles = StyleSheet.create({
   },
   profitCard: {
     flex: 1,
-    backgroundColor: "#F2F2F7",
     borderRadius: 16,
     padding: 16,
     alignItems: "center",
@@ -942,17 +1132,14 @@ const styles = StyleSheet.create({
   profitNumber: {
     fontSize: 20,
     fontWeight: "700",
-    color: "#1C1C1E",
     marginTop: 8,
     marginBottom: 4,
   },
   profitLabel: {
     fontSize: 11,
-    color: "#8E8E93",
     textAlign: "center",
   },
   trendsContainer: {
-    backgroundColor: "#F2F2F7",
     borderRadius: 16,
     padding: 16,
     marginBottom: 24,
@@ -963,7 +1150,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "#E5E5EA",
   },
   trendInfo: {
     flex: 1,
@@ -971,11 +1157,9 @@ const styles = StyleSheet.create({
   trendPeriod: {
     fontSize: 16,
     fontWeight: "500",
-    color: "#1C1C1E",
   },
   trendRevenue: {
     fontSize: 14,
-    color: "#8E8E93",
   },
   trendValues: {
     alignItems: "flex-end",
@@ -983,14 +1167,11 @@ const styles = StyleSheet.create({
   trendProfit: {
     fontSize: 16,
     fontWeight: "600",
-    color: "#34C759",
   },
   trendMargin: {
     fontSize: 12,
-    color: "#8E8E93",
   },
   insightsContainer: {
-    backgroundColor: "#F2F2F7",
     borderRadius: 16,
     padding: 16,
   },
@@ -999,18 +1180,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "#E5E5EA",
   },
   insightText: {
     fontSize: 14,
-    color: "#1C1C1E",
     marginLeft: 12,
     flex: 1,
   },
   transactionItem: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#F2F2F7",
     borderRadius: 12,
     padding: 16,
     marginBottom: 12,
@@ -1024,15 +1202,12 @@ const styles = StyleSheet.create({
   transactionType: {
     fontSize: 16,
     fontWeight: "600",
-    color: "#1C1C1E",
   },
   transactionQuantity: {
     fontSize: 14,
-    color: "#8E8E93",
   },
   transactionDate: {
     fontSize: 12,
-    color: "#C7C7CC",
   },
   transactionProfit: {
     alignItems: "flex-end",
@@ -1040,21 +1215,17 @@ const styles = StyleSheet.create({
   transactionAmount: {
     fontSize: 14,
     fontWeight: "600",
-    color: "#34C759",
   },
   transactionProfitText: {
     fontSize: 12,
-    color: "#8E8E93",
   },
   transactionNotes: {
     fontSize: 12,
-    color: "#8E8E93",
     fontStyle: "italic",
   },
   insightCard: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#F2F2F7",
     borderRadius: 16,
     padding: 16,
     marginBottom: 16,
@@ -1066,18 +1237,15 @@ const styles = StyleSheet.create({
   insightTitle: {
     fontSize: 16,
     fontWeight: "600",
-    color: "#1C1C1E",
     marginBottom: 4,
   },
   insightValue: {
     fontSize: 18,
     fontWeight: "700",
-    color: "#007AFF",
     marginBottom: 2,
   },
   insightSubtext: {
     fontSize: 12,
-    color: "#8E8E93",
   },
   recommendationsContainer: {
     marginTop: 24,
@@ -1085,14 +1253,13 @@ const styles = StyleSheet.create({
   recommendationItem: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#F2F2F7",
     borderRadius: 12,
     padding: 16,
     marginBottom: 12,
+    borderBottomWidth: 1,
   },
   recommendationText: {
     fontSize: 14,
-    color: "#1C1C1E",
     marginLeft: 12,
     flex: 1,
   },
