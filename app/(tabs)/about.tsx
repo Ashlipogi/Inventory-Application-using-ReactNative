@@ -14,7 +14,7 @@ export default function AboutScreen() {
 
       <View style={styles.content}>
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Our Mission</Text>
+          <Text style={styles.sectionMission}>Our Mission</Text>
           <Text style={styles.sectionContent}>
             To revolutionize inventory management through intelligent automation, real-time analytics, and user-friendly
             design that empowers businesses to optimize their stock operations efficiently.
@@ -208,10 +208,18 @@ const styles = StyleSheet.create({
   section: {
     marginBottom: 32,
   },
+  sectionMission: {
+       fontSize: 20,
+    fontWeight: "600",
+    color: "#1C1C1E",
+    marginTop: 15,
+    marginBottom: 16,
+  },
   sectionTitle: {
     fontSize: 20,
     fontWeight: "600",
     color: "#1C1C1E",
+    marginTop: 15,
     marginBottom: 16,
   },
   sectionContent: {

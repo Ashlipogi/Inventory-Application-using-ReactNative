@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react"
 import { View, Text, StyleSheet, Animated, Image, StatusBar } from "react-native"
 import { router } from "expo-router"
+import { LinearGradient } from "expo-linear-gradient"
 
 export default function SplashScreen() {
   const fadeAnim = useRef(new Animated.Value(0)).current
@@ -65,8 +66,13 @@ export default function SplashScreen() {
 
   return (
     <>
-      <StatusBar barStyle="light-content" backgroundColor="#007AFF" />
-      <View style={styles.container}>
+      <StatusBar barStyle="light-content" backgroundColor="#000000" />
+      <LinearGradient
+        colors={['#1a1a1a', '#2d2d2d', '#1a1a1a']}
+        style={styles.container}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+      >
         <Animated.View
           style={[
             styles.content,
@@ -77,7 +83,7 @@ export default function SplashScreen() {
           ]}
         >
           <View style={styles.logoContainer}>
-            <Image source={require("./imgs/LOGO.png")} style={styles.logo} resizeMode="contain" />
+            <Image source={require("./imgs/WLOGO.png")} style={styles.logo} resizeMode="contain" />
           </View>
 
           <Animated.View
@@ -118,7 +124,7 @@ export default function SplashScreen() {
             },
           ]}
         />
-      </View>
+      </LinearGradient>
     </>
   )
 }
@@ -126,7 +132,6 @@ export default function SplashScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#007AFF",
     justifyContent: "center",
     alignItems: "center",
   },
@@ -135,14 +140,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   logoContainer: {
-width: 100,
-  height: 100,
-  borderRadius: 100, // Half of width/height to make it circular
-  backgroundColor: "#F2F2F7",
-  alignItems: "center",
-  justifyContent: "center",
-  marginBottom: 20,
-  overflow: 'hidden',
     shadowColor: "#000",
     shadowOffset: {
       width: 0,
@@ -203,6 +200,6 @@ width: 100,
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: "#007AFF",
+    backgroundColor: "#000000",
   },
 })

@@ -147,6 +147,10 @@ class DatabaseService {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    await db.execAsync(`
+  INSERT OR IGNORE INTO users (username, email, password)
+  VALUES ('Owner', 'owner@stockbox.local', 'stockbox123')
+`);
   }
 
   // Initialize all database tables (public method)
@@ -158,9 +162,9 @@ class DatabaseService {
   static async createUser(user: Omit<User, 'id' | 'created_at'>): Promise<User> {
     return this.executeWithRetry(async () => {
       const result = await db.runAsync(
-        'INSERT INTO users (username, email, password) VALUES (?, ?, ?)',
-        [user.username, user.email, user.password]
-      );
+  'INSERT INTO users (username, email, password) VALUES (?, ?, ?)',
+  [user.username.toLowerCase(), user.email, user.password]
+);
 
       return {
         id: result.lastInsertRowId,
@@ -170,16 +174,17 @@ class DatabaseService {
     }, 'createUser');
   }
 
-  static async getUserByEmailAndPassword(email: string, password: string): Promise<User | null> {
-    return this.executeWithRetry(async () => {
-      const result = await db.getFirstAsync<User>(
-        'SELECT * FROM users WHERE email = ? AND password = ?',
-        [email, password]
-      );
-      
-      return result || null;
-    }, 'getUserByEmailAndPassword');
-  }
+static async getUserByUsernameAndPassword(username: string, password: string): Promise<User | null> {
+  return this.executeWithRetry(async () => {
+    const result = await db.getFirstAsync<User>(
+      'SELECT * FROM users WHERE LOWER(username) = ? AND password = ?',
+      [username.toLowerCase(), password]
+    );
+    
+    return result || null;
+  }, 'getUserByUsernameAndPassword');
+}
+
 
   static async getAllUsers(): Promise<User[]> {
     return this.executeWithRetry(async () => {

@@ -18,7 +18,7 @@ import { Ionicons } from "@expo/vector-icons"
 import DatabaseService from "@/lib/database"
 
 export default function SignInScreen() {
-  const [email, setEmail] = useState("")
+  const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
   const [loading, setLoading] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
@@ -37,47 +37,37 @@ export default function SignInScreen() {
     }
   }
 
-  const validateEmail = (email: string) => {
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    return emailRegex.test(email)
+const validateInputs = () => {
+  if (!username || !password) {
+    Alert.alert("Missing Information", "Please enter both username and password");
+    return false;
   }
+  return true;
+};
 
-  const validateInputs = () => {
-    if (!email || !password) {
-      Alert.alert("Missing Information", "Please fill in all fields")
-      return false
+const handleSignIn = async () => {
+  if (!validateInputs()) return;
+
+  setLoading(true);
+  try {
+    const user = await DatabaseService.getUserByUsernameAndPassword(username, password); // <-- NEW method
+    if (user) {
+      router.replace("/dashboard");
+    } else {
+      Alert.alert("Sign In Failed", "Invalid username or password");
     }
-    if (!validateEmail(email)) {
-      Alert.alert("Invalid Email", "Please enter a valid email address")
-      return false
-    }
-    return true
+  } catch (error) {
+    console.error("Sign in error:", error);
+    Alert.alert("Error", "Something went wrong. Please try again.");
+  } finally {
+    setLoading(false);
   }
+};
 
-  const handleSignIn = async () => {
-    if (!validateInputs()) return
 
-    setLoading(true)
-    try {
-      const user = await DatabaseService.getUserByEmailAndPassword(email, password)
-
-      if (user) {
-        // Navigate to dashboard and replace the current stack
-        router.replace("/dashboard")
-      } else {
-        Alert.alert("Sign In Failed", "Invalid email or password")
-      }
-    } catch (error) {
-      console.error("Sign in error:", error)
-      Alert.alert("Error", "Something went wrong. Please try again.")
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const navigateToSignUp = () => {
-    router.push("/signup")
-  }
+  // const navigateToSignUp = () => {
+  //   router.push("/signup")
+  // }
 
   return (
     <>
@@ -85,11 +75,11 @@ export default function SignInScreen() {
       <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === "ios" ? "padding" : "height"}>
         <ScrollView contentContainerStyle={styles.scrollContainer} showsVerticalScrollIndicator={false}>
           <View style={styles.header}>
-<View style={styles.iconContainer}>
+<View>
   <Image
-    source={require("../imgs/LOGO.png")}
+    source={require("../imgs/WLOGO.png")}
     style={{ width: 100, height: 100 }}
-    resizeMode="cover"
+    resizeMode="contain"
   />
 </View>
             <Text style={styles.title}>StockBox</Text>
@@ -97,22 +87,23 @@ export default function SignInScreen() {
           </View>
 
           <View style={styles.formContainer}>
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Email</Text>
-              <View style={styles.inputContainer}>
-                <Ionicons name="mail-outline" size={20} color="#8E8E93" style={styles.inputIcon} />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Enter your email"
-                  placeholderTextColor="#C7C7CC"
-                  value={email}
-                  onChangeText={setEmail}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-              </View>
-            </View>
+      <View style={styles.inputGroup}>
+        <Text style={styles.label}>Username</Text>
+        <View style={styles.inputContainer}>
+          <Ionicons name="person-outline" size={20} color="#8E8E93" style={styles.inputIcon} />
+          <TextInput
+            style={styles.input}
+            placeholder="Enter your username"
+            placeholderTextColor="#C7C7CC"
+            value={username}
+            onChangeText={setUsername}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="default"
+          />
+        </View>
+      </View>
+
 
             <View style={styles.inputGroup}>
               <Text style={styles.label}>Password</Text>
@@ -141,15 +132,15 @@ export default function SignInScreen() {
               <Text style={styles.signInButtonText}>{loading ? "Signing In..." : "Sign In"}</Text>
             </TouchableOpacity>
 
-            <View style={styles.divider}>
+            {/* <View style={styles.divider}>
               <View style={styles.dividerLine} />
               <Text style={styles.dividerText}>or</Text>
               <View style={styles.dividerLine} />
-            </View>
+            </View> */}
 
-            <TouchableOpacity style={styles.signUpButton} onPress={navigateToSignUp}>
+            {/* <TouchableOpacity style={styles.signUpButton} onPress={navigateToSignUp}>
               <Text style={styles.signUpButtonText}>Create New Account</Text>
-            </TouchableOpacity>
+            </TouchableOpacity> */}
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -172,16 +163,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginBottom: 40,
   },
-iconContainer: {
-  width: 100,
-  height: 100,
-  borderRadius: 100, // Half of width/height to make it circular
-  backgroundColor: "#F2F2F7",
-  alignItems: "center",
-  justifyContent: "center",
-  marginBottom: 20,
-  overflow: 'hidden', // Ensures the image stays inside
-},
+
   title: {
     fontSize: 32,
     fontWeight: "700",
